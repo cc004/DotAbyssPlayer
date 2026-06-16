@@ -38,6 +38,7 @@ const L2D_NATURAL_IDLE = {
   hairSeconds: 5.8,
   blinkIntervalSeconds: 4.2,
   blinkDurationSeconds: 0.18,
+  fallbackEyeOpen: 0.72,
 };
 const AUTO_CHECK_MS = 100;
 const AUTO_AFTER_VOICE_MS = 350;
@@ -2316,16 +2317,18 @@ class NovelModelLive2D {
       this.naturalBlinkStart += L2D_NATURAL_IDLE.blinkIntervalSeconds;
     }
     const blinkElapsed = elapsed - this.naturalBlinkStart;
-    let eyeOpen = 1;
+    let eyeOpen = this.motionMap.size ? null : L2D_NATURAL_IDLE.fallbackEyeOpen;
     if (blinkElapsed >= 0 && blinkElapsed <= L2D_NATURAL_IDLE.blinkDurationSeconds) {
       const half = L2D_NATURAL_IDLE.blinkDurationSeconds * 0.5;
       const close = blinkElapsed <= half
         ? smoothStep(clamp(blinkElapsed / half, 0, 1))
         : 1 - smoothStep(clamp((blinkElapsed - half) / half, 0, 1));
-      eyeOpen = 1 - close;
+      eyeOpen = (eyeOpen ?? 1) * (1 - close);
     }
-    this.setNaturalIdleParameter(layer, 'ParamEyeLOpen', eyeOpen);
-    this.setNaturalIdleParameter(layer, 'ParamEyeROpen', eyeOpen);
+    if (eyeOpen != null) {
+      this.setNaturalIdleParameter(layer, 'ParamEyeLOpen', eyeOpen);
+      this.setNaturalIdleParameter(layer, 'ParamEyeROpen', eyeOpen);
+    }
   }
 
   setNaturalIdleParameter(layer, id, value) {
@@ -2381,6 +2384,15 @@ class NovelModelLive2D {
     }
   }
 
+  refreshMosaicSourceCanvas() {
+    if (!this.app?.renderer || !this.app?.stage || !this.model) return;
+    this.suppressMosaicDrawables();
+    try {
+      this.app.renderer.render(this.app.stage);
+    } catch (_) {}
+    this.suppressMosaicDrawables();
+  }
+
   renderMosaicOverlay() {
     const canvas = el.mosaicLayer;
     if (!canvas) return;
@@ -2397,6 +2409,7 @@ class NovelModelLive2D {
 
     const source = el.live2dCanvas;
     if (!source?.width || !source?.height) return;
+    this.refreshMosaicSourceCanvas();
     const block = Math.max(2, Math.floor(Math.min(canvas.width / MOSAIC_PIXEL_DIV_X, canvas.height / MOSAIC_PIXEL_DIV_Y)));
     let drew = false;
     for (const drawable of drawables) {
@@ -4876,6 +4889,7 @@ function pixelateCanvasMesh(source, target, scratch, mesh, blockSize) {
   scratchCtx.imageSmoothingEnabled = true;
   scratchCtx.clearRect(0, 0, smallWidth, smallHeight);
   scratchCtx.drawImage(source, x, y, width, height, 0, 0, smallWidth, smallHeight);
+  neutralizeMosaicScratch(scratchCtx, smallWidth, smallHeight);
 
   targetCtx.save();
   buildMeshClipPath(targetCtx, mesh.points, mesh.indices);
@@ -4884,6 +4898,22 @@ function pixelateCanvasMesh(source, target, scratch, mesh, blockSize) {
   targetCtx.drawImage(scratch, 0, 0, smallWidth, smallHeight, x, y, width, height);
   targetCtx.imageSmoothingEnabled = true;
   targetCtx.restore();
+}
+
+function neutralizeMosaicScratch(ctx, width, height) {
+  try {
+    const image = ctx.getImageData(0, 0, width, height);
+    const data = image.data;
+    const saturation = 0.12;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] === 0) continue;
+      const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+      data[i] = gray + (data[i] - gray) * saturation;
+      data[i + 1] = gray + (data[i + 1] - gray) * saturation;
+      data[i + 2] = gray + (data[i + 2] - gray) * saturation;
+    }
+    ctx.putImageData(image, 0, 0);
+  } catch (_) {}
 }
 
 function buildMeshClipPath(ctx, points, indices) {
