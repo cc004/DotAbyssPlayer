@@ -6,6 +6,7 @@ const BG_DATA_ROOT = `${DATA_ROOT}backgrounds/novel/`;
 const LIVE2D_TAG = 'Live2DTag';
 const L2D_DEFAULT_IDLE_MOTION = 'scene01_loop';
 const L2D_GROUP_PRIORITY = [
+  'NaturalIdle',
   'Scene',
   'FaceEmotion',
   'FaceAngle',
@@ -29,6 +30,14 @@ const L2D_LIP_SYNC = {
   highFreqEnhancer: 100,
   maxMouthYSize: 150,
   webGLPeakLevelMultiplier: 7,
+};
+const L2D_NATURAL_IDLE = {
+  layer: 'NaturalIdle',
+  breathSeconds: 3.4,
+  bodySeconds: 4.8,
+  hairSeconds: 5.8,
+  blinkIntervalSeconds: 4.2,
+  blinkDurationSeconds: 0.18,
 };
 const AUTO_CHECK_MS = 100;
 const AUTO_AFTER_VOICE_MS = 350;
@@ -2001,6 +2010,9 @@ class NovelModelLive2D {
     this.mosaicScratch = document.createElement('canvas');
     this.mosaicStatus = 'uninitialized';
     this.mosaicDrawPatchInstalled = false;
+    this.naturalIdleActive = false;
+    this.naturalIdleStarted = 0;
+    this.naturalBlinkStart = L2D_NATURAL_IDLE.blinkIntervalSeconds * 0.45;
   }
 
   reset() {
@@ -2019,6 +2031,9 @@ class NovelModelLive2D {
     this.mosaicDrawables = [];
     this.mosaicStatus = 'uninitialized';
     this.mosaicDrawPatchInstalled = false;
+    this.naturalIdleActive = false;
+    this.naturalIdleStarted = 0;
+    this.naturalBlinkStart = L2D_NATURAL_IDLE.blinkIntervalSeconds * 0.45;
     this.clearMosaicOverlay();
     if (this.holdFrame) cancelAnimationFrame(this.holdFrame);
     this.holdFrame = 0;
@@ -2119,6 +2134,7 @@ class NovelModelLive2D {
       el.fallbackTexture.classList.remove('visible');
       this.fit();
       this.renderMosaicOverlay();
+      this.startNaturalIdleMotion();
       if (!this.parameterLayers.has('Scene')) this.startDefaultIdleMotion();
     } else {
       el.fallbackTexture.classList.toggle('visible', this.hasFallbackTexture);
@@ -2139,6 +2155,7 @@ class NovelModelLive2D {
     el.fallbackTexture.classList.remove('visible');
     el.motionBadge.textContent = 'Live2D hidden';
     this.stopLipSync();
+    this.stopNaturalIdleMotion();
     this.clearMosaicOverlay();
   }
 
@@ -2178,8 +2195,8 @@ class NovelModelLive2D {
   startDefaultIdleMotion() {
     if (!this.model) return;
     const idleMotion = this.findDefaultIdleMotion();
-    if (!idleMotion?.data) return;
-    this.playMotion(idleMotion.name, true, true);
+    if (idleMotion?.data) this.playMotion(idleMotion.name, true, true);
+    else this.startNaturalIdleMotion();
   }
 
   findDefaultIdleMotion() {
@@ -2250,11 +2267,79 @@ class NovelModelLive2D {
         return;
       }
       this.updateLipSync();
+      this.updateNaturalIdleMotion();
       this.applyHeldParameters();
       this.renderMosaicOverlay();
       this.holdFrame = requestAnimationFrame(tick);
     };
     this.holdFrame = requestAnimationFrame(tick);
+  }
+
+  startNaturalIdleMotion() {
+    if (!this.model || this.naturalIdleActive) return;
+    this.naturalIdleActive = true;
+    this.naturalIdleStarted = performance.now();
+    this.naturalBlinkStart = L2D_NATURAL_IDLE.blinkIntervalSeconds * 0.45;
+    this.ensureParameterLayer(L2D_NATURAL_IDLE.layer);
+  }
+
+  stopNaturalIdleMotion() {
+    this.naturalIdleActive = false;
+    this.parameterLayers.delete(L2D_NATURAL_IDLE.layer);
+    if (this.model) this.applyHeldParameters();
+  }
+
+  updateNaturalIdleMotion() {
+    if (!this.naturalIdleActive) return;
+    if (!this.visible || !this.model) {
+      this.stopNaturalIdleMotion();
+      return;
+    }
+
+    const elapsed = Math.max(0, (performance.now() - this.naturalIdleStarted) / 1000);
+    const layer = this.ensureParameterLayer(L2D_NATURAL_IDLE.layer);
+    layer.clear();
+
+    const tau = Math.PI * 2;
+    const breath = 0.5 - Math.cos((elapsed / L2D_NATURAL_IDLE.breathSeconds) * tau) * 0.5;
+    const body = Math.sin((elapsed / L2D_NATURAL_IDLE.bodySeconds) * tau);
+    const hair = Math.sin((elapsed / L2D_NATURAL_IDLE.hairSeconds) * tau + 0.7);
+    this.setNaturalIdleParameter(layer, 'ParamBreath', breath);
+    this.setNaturalIdleParameter(layer, 'ParamManBreath', breath * 0.35);
+    this.setNaturalIdleParameter(layer, 'ParamBodyMove', (breath - 0.5) * 0.045);
+    this.setNaturalIdleParameter(layer, 'ParamBodyAngleZ', body * 0.035);
+    this.setNaturalIdleParameter(layer, 'ParamShoulder', (breath - 0.5) * 0.04);
+    this.setNaturalIdleParameter(layer, 'ParamHairFront', hair * 0.02);
+    this.setNaturalIdleParameter(layer, 'ParamHairSideR', -hair * 0.015);
+
+    while (elapsed - this.naturalBlinkStart > L2D_NATURAL_IDLE.blinkIntervalSeconds) {
+      this.naturalBlinkStart += L2D_NATURAL_IDLE.blinkIntervalSeconds;
+    }
+    const blinkElapsed = elapsed - this.naturalBlinkStart;
+    let eyeOpen = 1;
+    if (blinkElapsed >= 0 && blinkElapsed <= L2D_NATURAL_IDLE.blinkDurationSeconds) {
+      const half = L2D_NATURAL_IDLE.blinkDurationSeconds * 0.5;
+      const close = blinkElapsed <= half
+        ? smoothStep(clamp(blinkElapsed / half, 0, 1))
+        : 1 - smoothStep(clamp((blinkElapsed - half) / half, 0, 1));
+      eyeOpen = 1 - close;
+    }
+    this.setNaturalIdleParameter(layer, 'ParamEyeLOpen', eyeOpen);
+    this.setNaturalIdleParameter(layer, 'ParamEyeROpen', eyeOpen);
+  }
+
+  setNaturalIdleParameter(layer, id, value) {
+    const core = this.model?.internalModel?.coreModel;
+    if (!core || !id || !Number.isFinite(value)) return;
+    let index = -1;
+    try { index = core.getParameterIndex?.(id); } catch (_) {}
+    if (!Number.isInteger(index) || index < 0) return;
+    let min = -Infinity;
+    let max = Infinity;
+    try { min = Number(core.getParameterMinimumValue?.(index)); } catch (_) {}
+    try { max = Number(core.getParameterMaximumValue?.(index)); } catch (_) {}
+    const next = Number.isFinite(min) && Number.isFinite(max) ? clamp(value, min, max) : value;
+    layer.set(id, next);
   }
 
   cacheMosaicDrawables() {
@@ -2265,15 +2350,15 @@ class NovelModelLive2D {
       || [];
     this.mosaicDrawables = Array.from(ids)
       .map((id, index) => ({ id: String(id), index }))
-      .filter((item) => item.id.startsWith('Mosaic_') || item.id.startsWith('MosaicInsted_'))
+      .map((item) => ({ ...item, material: mosaicDrawableMaterial(item.id) }))
+      .filter((item) => item.material)
       .map((item) => ({
         ...item,
-        material: item.id.startsWith('MosaicInsted_') ? 'inverted' : 'mosaic',
       }));
     const mosaicCount = this.mosaicDrawables.filter((item) => item.material === 'mosaic').length;
     const invertedCount = this.mosaicDrawables.filter((item) => item.material === 'inverted').length;
     this.mosaicStatus = this.mosaicDrawables.length
-      ? `${mosaicCount} Mosaic_ / ${invertedCount} MosaicInsted_ masks`
+      ? `${mosaicCount} mosaic / ${invertedCount} inverted masks`
       : 'no mosaic drawables';
   }
 
@@ -4926,14 +5011,21 @@ function normalizeMosaicMode(value) {
   const mode = normalizeKey(value || 'original');
   if (mode === 'off' || mode === 'none') return 'off';
   if (mode === 'mosaic' || mode === 'normal') return 'mosaic';
-  if (mode === 'inverted' || mode === 'mosaicinsted' || mode === 'mosaicinstead') return 'inverted';
+  if (mode === 'inverted' || mode === 'mosaicinvert' || mode === 'mosaicinsted' || mode === 'mosaicinstead') return 'inverted';
   return 'original';
+}
+
+function mosaicDrawableMaterial(id) {
+  const key = normalizeKey(id);
+  if (!key.includes('mosaic') && !key.includes('mozaic')) return '';
+  if (key.includes('invert') || key.includes('insted') || key.includes('instead')) return 'inverted';
+  return 'mosaic';
 }
 
 function mosaicModeLabel(value) {
   const mode = normalizeMosaicMode(value);
   if (mode === 'mosaic') return 'Mosaic_';
-  if (mode === 'inverted') return 'MosaicInsted_';
+  if (mode === 'inverted') return 'MosaicInvert_';
   if (mode === 'off') return 'off';
   return 'Original';
 }
