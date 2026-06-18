@@ -35,15 +35,15 @@ dotnet run --project src/DotAbyssClient -- download --profile android-dmm-r18 -o
 2. Extract story bundles into the player data folder:
 
 ```powershell
-python tools/adv_extract.py --scan-all --story-prefix 1001 --bundle-root workspace/bundles/android-dmm-r18 --output src/AdvPlayer/data_r18_all
+python tools/adv_extract.py --scan-all --bundle-root workspace/bundles/android-dmm-r18 --output src/AdvPlayer/data_r18_all
 ```
 
 3. Extract shared character, background, and SE assets:
 
 ```powershell
-python tools/extract_charastand_assets.py
-python tools/extract_bg_assets.py
-python tools/extract_global_se_assets.py
+python tools/extract_charastand_assets.py --story-root src/AdvPlayer/data_r18_all/stories
+python tools/extract_bg_assets.py --story-root src/AdvPlayer/data_r18_all/stories
+python tools/extract_global_se_assets.py --story-root src/AdvPlayer/data_r18_all/stories
 python tools/convert_wav_audio_to_ogg.py
 ```
 

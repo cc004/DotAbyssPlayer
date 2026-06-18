@@ -37,7 +37,6 @@ Example:
 ```powershell
 python tools/adv_extract.py `
   --scan-all `
-  --story-prefix 1001 `
   --bundle-root workspace/bundles/android-dmm-r18 `
   --output src/AdvPlayer/data_r18_all
 ```
@@ -45,6 +44,7 @@ python tools/adv_extract.py `
 Notes:
 
 - `--target` can be repeated if you want to extract only specific story folders
+- `--story-prefix 1001` can be added to restrict extraction to a subset; omitting it extracts every discovered r18 novel story
 - `--no-audio` skips CRI audio decoding
 - `--vgmstream` can point to a custom `vgmstream-cli.exe`
 
@@ -67,7 +67,7 @@ python tools/extract_bg_assets.py
 Shared SE:
 
 ```powershell
-python tools/extract_global_se_assets.py
+python tools/extract_global_se_assets.py --story-root src/AdvPlayer/data_r18_all/stories
 ```
 
 WAV to OGG:

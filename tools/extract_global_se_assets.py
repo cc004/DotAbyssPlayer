@@ -9,7 +9,10 @@ from pathlib import Path
 
 
 WORKSPACE = Path(__file__).resolve().parents[1]
-DEFAULT_STORIES_ROOT = WORKSPACE / "src" / "AdvPlayer" / "data" / "stories"
+DEFAULT_STORY_ROOTS = [
+    WORKSPACE / "src" / "AdvPlayer" / "data" / "stories",
+    WORKSPACE / "src" / "AdvPlayer" / "data_r18_all" / "stories",
+]
 DEFAULT_SE_BUNDLE_ROOT = (
     WORKSPACE
     / "workspace"
@@ -53,19 +56,20 @@ def clean_source_path(path: Path, base: Path) -> str:
         return path.name
 
 
-def collect_se_cues(stories_root: Path) -> list[str]:
+def collect_se_cues(story_roots: list[Path]) -> list[str]:
     cues: set[str] = set()
-    if not stories_root.exists():
-        return []
-    for story_file in stories_root.glob("1001*/story.json"):
-        story = json.loads(story_file.read_text(encoding="utf-8"))
-        for script in story.get("scripts", []):
-            for command in script.get("commands", []):
-                if str(command.get("command", "")).lower() not in {"seplay", "asyncseplay"}:
-                    continue
-                args = command.get("args") or []
-                if len(args) >= 2 and args[1]:
-                    cues.add(safe_name(str(args[1])))
+    for stories_root in story_roots:
+        if not stories_root.exists():
+            continue
+        for story_file in stories_root.glob("*/story.json"):
+            story = json.loads(story_file.read_text(encoding="utf-8"))
+            for script in story.get("scripts", []):
+                for command in script.get("commands", []):
+                    if str(command.get("command", "")).lower() not in {"seplay", "asyncseplay"}:
+                        continue
+                    args = command.get("args") or []
+                    if len(args) >= 2 and args[1]:
+                        cues.add(safe_name(str(args[1])))
     return sorted(cues)
 
 
@@ -124,13 +128,15 @@ def decode_cue(adv_extract, vgmstream: Path, cue_name: str, bundle: Path, bundle
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Extract shared novel SE cues referenced by story.json files.")
-    parser.add_argument("--stories-root", default=str(DEFAULT_STORIES_ROOT), help="Story root used to scan referenced SE cue ids.")
+    parser.add_argument("--story-root", action="append", default=[], help="Story root directory containing <story-id>/story.json. Can be repeated.")
+    parser.add_argument("--stories-root", action="append", default=[], help=argparse.SUPPRESS)
     parser.add_argument("--bundle-root", default=str(DEFAULT_SE_BUNDLE_ROOT), help="Bundle root that contains the novel SE CRI bundles.")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT_ROOT), help="Output directory for raw/decoded SE files and index.json.")
     parser.add_argument("--vgmstream", default=None, help="Optional path to vgmstream-cli.exe.")
     args = parser.parse_args()
 
-    stories_root = Path(args.stories_root)
+    story_root_args = args.story_root + args.stories_root
+    story_roots = [Path(value) for value in story_root_args] if story_root_args else DEFAULT_STORY_ROOTS
     bundle_root = Path(args.bundle_root)
     output_root = Path(args.output)
     raw_root = output_root / "raw"
@@ -153,7 +159,7 @@ def main() -> int:
         "errors": [],
     }
 
-    for cue_name in collect_se_cues(stories_root):
+    for cue_name in collect_se_cues(story_roots):
         bundle = find_bundle(cue_name, bundle_root)
         if bundle is None:
             index["errors"].append({"cue": cue_name, "error": "bundle not found"})
