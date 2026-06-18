@@ -51,6 +51,9 @@ button.active,
   height: 100vh;
   min-height: 0;
 }
+.reader-shell:has(.inspect-pane.collapsed) {
+  grid-template-columns: minmax(220px, 280px) minmax(420px, 1fr) 0fr;
+}
 
 .story-pane,
 .inspect-pane {
@@ -69,22 +72,54 @@ button.active,
 .story-pane header,
 .inspect-pane header,
 .toolbar {
-  min-height: 64px;
-  padding: 14px;
+  min-height: 40px;
+  padding: 8px 14px;
   border-bottom: 1px solid var(--border);
-}
-
-.toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 10px;
 }
+
+.toolbar button,
+header button {
+  padding: 4px 8px;
+  font-size: 13px;
+  height: 28px;
+  cursor: pointer;
+}
+
+.toggle-inspect-btn {
+  padding: 0 !important;
+  font-size: 11px !important;
+  height: 38px !important;
+  width: 24px !important;
+}
+
 
 .toolbar-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-right: 20px;
+}
+
+.toolbar {
+  position: relative;
+}
+
+.toolbar::after {
+  content: "\672c\79bb\7ebf\514d\8d39\53d1\653e\ff0c\4ed8\8d39\7528\6237\8bf7\9000\6b3e";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 11px;
+  color: rgb(255, 255, 255);
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
 }
 
 .toggle-control,
@@ -92,10 +127,11 @@ button.active,
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 36px;
-  padding: 7px 10px;
+  min-height: 28px; 
+  padding: 0 8px; 
+  
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 4px;
   background: var(--panel-2);
   color: var(--text);
   font-size: 13px;
@@ -103,20 +139,24 @@ button.active,
   user-select: none;
 }
 
-.toggle-control input {
-  width: 15px;
-  height: 15px;
-  accent-color: var(--accent);
-}
-
 .select-control select {
-  min-width: 118px;
+  min-width: 100px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 3px;
   background: #14191c;
   color: var(--text);
-  padding: 4px 8px;
+
+  padding: 0 4px;
+  height: 22px;
+  font-size: 12px;
   font: inherit;
+}
+
+.toggle-control {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  font-size: 13px;
 }
 
 .app-title,
@@ -138,6 +178,9 @@ button.active,
 
 .story-item,
 .command-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 10px 12px;
   border-bottom: 1px solid rgba(255,255,255,.06);
   cursor: pointer;
@@ -147,6 +190,13 @@ button.active,
 .command-item.active {
   background: rgba(102, 208, 183, .12);
   border-left: 3px solid var(--accent);
+}
+
+.story-item-text-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .story-item-title {
@@ -159,6 +209,17 @@ button.active,
   margin-top: 4px;
   color: var(--muted);
   font-size: 11px;
+}
+
+
+.story-thumb {
+  width: 129px;
+  height: 73.5px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid rgba(255,255,255,.1);
+  background: #101416;
+  flex-shrink: 0;
 }
 
 .play-pane {
@@ -388,33 +449,100 @@ button.active,
 }
 
 .message-box {
-  min-height: 132px;
-  padding: 18px 22px;
+  min-height: 95px;
+  padding: 16px 20px;
   border-top: 1px solid var(--border);
   background: rgba(17, 20, 22, .96);
   transition: opacity .2s linear;
 }
 
 .speaker {
-  height: 22px;
+  height: 16px;
+  font-size: 13px;
   color: var(--accent);
   font-weight: 700;
+  margin-bottom: 2px;
 }
 
 .message {
-  line-height: 1.7;
-  font-size: 18px;
+  line-height: 1.25;
+  font-size: 16px;
   white-space: pre-wrap;
 }
 
 .controls {
   display: grid;
   grid-template-columns: repeat(4, auto) minmax(120px, 1fr) auto;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
   padding: 12px;
   border-top: 1px solid var(--border);
   background: var(--panel);
+}
+.controls button {
+  height: 22px !important;
+  padding: 0 10px !important;
+  font-size: 13px !important;
+}
+
+
+.volume-controls {
+  display: flex;
+  justify-content: space-around; 
+  align-items: center;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.vol-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.vol-label {
+  font-size: 13px;
+  color: #ccc;
+  width: 55px;
+  user-select: none;
+}
+
+.vol-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100px;
+  height: 5px;
+  background: #222;
+  border-radius: 3px;
+  outline: none;
+  border: 1px solid #3c3c46;
+}
+
+.vol-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #00ffcc;
+  cursor: pointer;
+  box-shadow: 0 0 6px rgba(0, 255, 204, 0.6);
+  transition: transform 0.1s;
+}
+
+.vol-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+
+.vol-num {
+  color: #00ffcc;
+  font-size: 12px;
+  font-family: monospace;
+  width: 35px;
+  text-align: right;
+  user-select: none;
 }
 
 .position {
@@ -456,4 +584,38 @@ pre {
   .story-list {
     max-height: 160px;
   }
+}
+
+.toggle-inspect-btn {
+  position: fixed;
+  right: 350px; /* 初始卡在面板左上角（根据你面板实际宽度调整） */
+  top: 10px;
+  width: 24px;
+  height: 38px;
+  background: #2c2c2c; /* 匹配暗色调 */
+  color: #ccc;
+  border: 1px solid #3c3c3c;
+  border-right: none;
+  border-radius: 4px 0 0 4px;
+  cursor: pointer;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}
+
+.toggle-inspect-btn:hover {
+  background: #3e3e3e;
+  color: #fff;
+}
+
+/* 🎯 面板瞬间物理消失 */
+.inspect-pane.collapsed {
+  display: none !important;
+}
+
+/* 🎯 关键：当面板消失后，让原本悬浮在左侧的按钮瞬间吸附到最右侧边缘 */
+.inspect-pane.collapsed + .toggle-inspect-btn {
+  right: 0 !important;
 }

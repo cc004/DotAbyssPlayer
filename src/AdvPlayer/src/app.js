@@ -6,7 +6,6 @@ const BG_DATA_ROOT = `${DATA_ROOT}backgrounds/novel/`;
 const LIVE2D_TAG = 'Live2DTag';
 const L2D_DEFAULT_IDLE_MOTION = 'scene01_loop';
 const L2D_GROUP_PRIORITY = [
-  'NaturalIdle',
   'Scene',
   'FaceEmotion',
   'FaceAngle',
@@ -30,15 +29,6 @@ const L2D_LIP_SYNC = {
   highFreqEnhancer: 100,
   maxMouthYSize: 150,
   webGLPeakLevelMultiplier: 7,
-};
-const L2D_NATURAL_IDLE = {
-  layer: 'NaturalIdle',
-  breathSeconds: 3.4,
-  bodySeconds: 4.8,
-  hairSeconds: 5.8,
-  blinkIntervalSeconds: 4.2,
-  blinkDurationSeconds: 0.18,
-  fallbackEyeOpen: 0.72,
 };
 const AUTO_CHECK_MS = 100;
 const AUTO_AFTER_VOICE_MS = 350;
@@ -106,7 +96,7 @@ function bindEvents() {
 }
 
 async function loadIndex() {
-  const primaryIndex = await fetchJsonOptional(`${DATA_ROOT}index.json`, { stories: [] });
+  const primaryIndex = await fetchJson(`${DATA_ROOT}index.json`);
   const r18Index = await fetchJsonOptional(`${R18_DATA_ROOT}index.json`, { stories: [] });
   const storiesById = new Map();
   for (const source of [
@@ -125,11 +115,7 @@ async function loadIndex() {
   app.backgroundAssets = new Map(Object.entries(backgroundIndex.backgrounds || {}).map(([key, item]) => [normalizeAssetKey(key), item]));
   el.storyCount.textContent = `${app.index.stories.length} stories`;
   renderStoryList();
-  if (app.index.stories.length) {
-    await loadStory(app.index.stories[0].id);
-  } else {
-    el.storyMeta.textContent = 'No extracted story data';
-  }
+  if (app.index.stories.length) await loadStory(app.index.stories[0].id);
 }
 
 async function loadGlobalAudioSources() {
@@ -144,24 +130,46 @@ async function loadGlobalAudioSources() {
 async function loadStory(storyId) {
   const meta = app.index.stories.find((story) => story.id === storyId);
   if (!meta) return;
+  
   stopAuto();
+ 
   app.runToken += 1;
   app.asyncToken += 1;
+  const currentAsyncToken = app.asyncToken; 
+
+  if (app.controller) {
+    app.controller.sound.stopAll();
+    app.controller.live2d.stopLipSync();
+    app.controller.async.reset();
+    
+  }
   app.storyMeta = meta;
-  app.story = await fetchJson(`${meta.dataRoot || DATA_ROOT}${meta.path}`);
+
+  const storyData = await fetchJson(`${meta.dataRoot || DATA_ROOT}${meta.path}`);
+
+  if (currentAsyncToken !== app.asyncToken) {
+    return; 
+  }
+  app.story = storyData;
   app.script = app.story.scripts[0] || { commands: [], messages: [] };
   app.current = -1;
   app.running = false;
   app.labels = buildLabels(app.script.commands);
+  
   const basePath = storyBasePath(meta);
   app.controller.reset(app.story, basePath);
   app.controller.live2d.setMosaicMode(el.mosaicMode.value);
   await app.controller.live2d.loadStory(app.story, basePath);
+  if (currentAsyncToken !== app.asyncToken) {
+    return; 
+  }
   app.controller.sound.loadStory(app.story, basePath);
+  
   el.storyTitle.textContent = meta.title || meta.id;
   el.storyMeta.textContent = `${app.script.commands.length} commands / ${app.script.messages.length} messages`;
   el.seek.max = Math.max(0, app.script.commands.length - 1);
   el.seek.value = 0;
+  
   renderStoryList();
   renderCommandList();
   updateInspectors();
@@ -186,15 +194,43 @@ function storyBasePath(meta = app.storyMeta) {
   return `${root}${slash >= 0 ? path.slice(0, slash + 1) : ''}`;
 }
 
-function renderStoryList() {
+let thumbCache = null;
+
+async function renderStoryList() {
   el.storyList.innerHTML = '';
+  if (!thumbCache) {
+    try {
+      const response = await fetch('data_r18_all/thumb.json');
+      if (response.ok) {
+        thumbCache = await response.json();
+      } else {
+        thumbCache = {};
+      }
+    } catch (e) {
+      console.warn('未找到缩略图配置文件或加载失败，已启用纯文本兜底模式', e);
+      thumbCache = {};
+    }
+  }
   for (const story of app.index.stories) {
     const item = document.createElement('div');
     item.className = `story-item${app.story?.id === story.id ? ' active' : ''}`;
+    
+    const storyIdStr = String(story.id).trim();
+    let imgHtml = '';
+    if (storyIdStr.endsWith('2')) {
+      const thumbSrc = thumbCache[storyIdStr];
+      if (thumbSrc) {
+        imgHtml = `<img class="story-thumb" src="${thumbSrc}" alt="L2D" onerror="this.style.display='none'">`;
+      }
+    }
     item.innerHTML = `
-      <div class="story-item-title">${escapeHtml(story.title || story.id)}</div>
-      <div class="story-item-meta">${story.stats.messageCount} text / ${story.stats.motionCount || 0} motions / ${story.stats.audioCueCount || 0} audio</div>
+      ${imgHtml}
+      <div class="story-item-text-wrapper">
+        <div class="story-item-title">${escapeHtml(story.title || story.id)}</div>
+        <div class="story-item-meta">${story.stats.messageCount} text / ${story.stats.motionCount || 0} motions / ${story.stats.audioCueCount || 0} audio</div>
+      </div>
     `;
+    
     item.addEventListener('click', () => loadStory(story.id));
     el.storyList.appendChild(item);
   }
@@ -219,10 +255,16 @@ async function nextText() {
   if (app.running || !app.script) return;
   completeCurrentMessagePause();
   app.running = true;
-  const token = ++app.runToken;
+  const token = app.runToken;
+  
   try {
     while (app.current + 1 < app.script.commands.length && token === app.runToken) {
-      const result = await executeAt(app.current + 1, token, false);
+      const nextIndex = app.current + 1; 
+      
+      const result = await executeAt(nextIndex, token, false);
+      if (token !== app.runToken) {
+        return; 
+      }
       if (result?.jumpIndex != null) {
         app.current = result.jumpIndex - 1;
         continue;
@@ -230,9 +272,11 @@ async function nextText() {
       if (result?.pauseOnText) break;
     }
   } finally {
-    app.running = false;
-    updatePosition();
-    queueAuto();
+    if (token === app.runToken) {
+      app.running = false;
+      updatePosition();
+      queueAuto();
+    }
   }
 }
 
@@ -258,6 +302,9 @@ async function executeAt(index, token, replaying, replayTargetIndex = -1) {
   app.controller.scene.render();
   updatePosition();
   updateInspectors();
+  if (replaying) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
   return result;
 }
 
@@ -279,19 +326,48 @@ async function replayTo(index) {
   stopAuto();
   const token = ++app.runToken;
   app.asyncToken += 1;
+  const currentAsyncToken = app.asyncToken;
   const basePath = storyBasePath();
   app.controller.reset(app.story, basePath);
   await app.controller.live2d.loadStory(app.story, basePath);
+  if (currentAsyncToken !== app.asyncToken) return;
   app.controller.sound.loadStory(app.story, basePath);
   app.current = -1;
   for (let i = 0; i <= index; i += 1) {
-    const result = await executeAt(i, token, true, index);
+    const isLastFrame = (i === index);
+    const result = await executeAt(i, token, isLastFrame ? false : true, index);
+    if (token !== app.runToken) return;
     if (result?.jumpIndex != null && result.jumpIndex <= index) i = result.jumpIndex - 1;
   }
+  app.running = false; 
+  await new Promise(resolve => setTimeout(resolve, 5));
+  if (app.controller.scene && typeof app.controller.scene.render === 'function') {
+    app.controller.scene.render();
+  }
   const voiceCue = app.controller.message.state.voiceCue;
+  
+  try {
+    app.controller.sound.stop('voice');
+  } catch(e) {}
+
   if (voiceCue) {
-    app.controller.sound.play(voiceCue, 'voice', 'voice', { volume: 1 });
+    const voiceFactor = window.app?.config?.voiceVolume ?? 1.0;
+    app.controller.sound.play(voiceCue, 'voice', 'voice', { volume: voiceFactor });
     app.controller.live2d.playLipSync(voiceCue, true);
+
+    const currentLockId = Date.now() + '_' + Math.random();
+    app.controller.sound._activeVoiceLockId = currentLockId;
+
+    window._liveChannels = window._liveChannels || {};
+    window._liveChannels['voice'] = {
+      type: 'voice',
+      origVolume: 1.0,
+      soundModel: app.controller.sound,
+      voiceLockId: currentLockId
+    };
+  } else {
+    if (window._liveChannels) delete window._liveChannels['voice'];
+    if (app.controller.sound) app.controller.sound._activeVoiceLockId = null;
   }
   queueAuto();
 }
@@ -2011,9 +2087,6 @@ class NovelModelLive2D {
     this.mosaicScratch = document.createElement('canvas');
     this.mosaicStatus = 'uninitialized';
     this.mosaicDrawPatchInstalled = false;
-    this.naturalIdleActive = false;
-    this.naturalIdleStarted = 0;
-    this.naturalBlinkStart = L2D_NATURAL_IDLE.blinkIntervalSeconds * 0.45;
   }
 
   reset() {
@@ -2032,9 +2105,6 @@ class NovelModelLive2D {
     this.mosaicDrawables = [];
     this.mosaicStatus = 'uninitialized';
     this.mosaicDrawPatchInstalled = false;
-    this.naturalIdleActive = false;
-    this.naturalIdleStarted = 0;
-    this.naturalBlinkStart = L2D_NATURAL_IDLE.blinkIntervalSeconds * 0.45;
     this.clearMosaicOverlay();
     if (this.holdFrame) cancelAnimationFrame(this.holdFrame);
     this.holdFrame = 0;
@@ -2135,7 +2205,6 @@ class NovelModelLive2D {
       el.fallbackTexture.classList.remove('visible');
       this.fit();
       this.renderMosaicOverlay();
-      this.startNaturalIdleMotion();
       if (!this.parameterLayers.has('Scene')) this.startDefaultIdleMotion();
     } else {
       el.fallbackTexture.classList.toggle('visible', this.hasFallbackTexture);
@@ -2156,7 +2225,6 @@ class NovelModelLive2D {
     el.fallbackTexture.classList.remove('visible');
     el.motionBadge.textContent = 'Live2D hidden';
     this.stopLipSync();
-    this.stopNaturalIdleMotion();
     this.clearMosaicOverlay();
   }
 
@@ -2196,8 +2264,8 @@ class NovelModelLive2D {
   startDefaultIdleMotion() {
     if (!this.model) return;
     const idleMotion = this.findDefaultIdleMotion();
-    if (idleMotion?.data) this.playMotion(idleMotion.name, true, true);
-    else this.startNaturalIdleMotion();
+    if (!idleMotion?.data) return;
+    this.playMotion(idleMotion.name, true, true);
   }
 
   findDefaultIdleMotion() {
@@ -2268,81 +2336,11 @@ class NovelModelLive2D {
         return;
       }
       this.updateLipSync();
-      this.updateNaturalIdleMotion();
       this.applyHeldParameters();
       this.renderMosaicOverlay();
       this.holdFrame = requestAnimationFrame(tick);
     };
     this.holdFrame = requestAnimationFrame(tick);
-  }
-
-  startNaturalIdleMotion() {
-    if (!this.model || this.naturalIdleActive) return;
-    this.naturalIdleActive = true;
-    this.naturalIdleStarted = performance.now();
-    this.naturalBlinkStart = L2D_NATURAL_IDLE.blinkIntervalSeconds * 0.45;
-    this.ensureParameterLayer(L2D_NATURAL_IDLE.layer);
-  }
-
-  stopNaturalIdleMotion() {
-    this.naturalIdleActive = false;
-    this.parameterLayers.delete(L2D_NATURAL_IDLE.layer);
-    if (this.model) this.applyHeldParameters();
-  }
-
-  updateNaturalIdleMotion() {
-    if (!this.naturalIdleActive) return;
-    if (!this.visible || !this.model) {
-      this.stopNaturalIdleMotion();
-      return;
-    }
-
-    const elapsed = Math.max(0, (performance.now() - this.naturalIdleStarted) / 1000);
-    const layer = this.ensureParameterLayer(L2D_NATURAL_IDLE.layer);
-    layer.clear();
-
-    const tau = Math.PI * 2;
-    const breath = 0.5 - Math.cos((elapsed / L2D_NATURAL_IDLE.breathSeconds) * tau) * 0.5;
-    const body = Math.sin((elapsed / L2D_NATURAL_IDLE.bodySeconds) * tau);
-    const hair = Math.sin((elapsed / L2D_NATURAL_IDLE.hairSeconds) * tau + 0.7);
-    this.setNaturalIdleParameter(layer, 'ParamBreath', breath);
-    this.setNaturalIdleParameter(layer, 'ParamManBreath', breath * 0.35);
-    this.setNaturalIdleParameter(layer, 'ParamBodyMove', (breath - 0.5) * 0.045);
-    this.setNaturalIdleParameter(layer, 'ParamBodyAngleZ', body * 0.035);
-    this.setNaturalIdleParameter(layer, 'ParamShoulder', (breath - 0.5) * 0.04);
-    this.setNaturalIdleParameter(layer, 'ParamHairFront', hair * 0.02);
-    this.setNaturalIdleParameter(layer, 'ParamHairSideR', -hair * 0.015);
-
-    while (elapsed - this.naturalBlinkStart > L2D_NATURAL_IDLE.blinkIntervalSeconds) {
-      this.naturalBlinkStart += L2D_NATURAL_IDLE.blinkIntervalSeconds;
-    }
-    const blinkElapsed = elapsed - this.naturalBlinkStart;
-    let eyeOpen = this.motionMap.size ? null : L2D_NATURAL_IDLE.fallbackEyeOpen;
-    if (blinkElapsed >= 0 && blinkElapsed <= L2D_NATURAL_IDLE.blinkDurationSeconds) {
-      const half = L2D_NATURAL_IDLE.blinkDurationSeconds * 0.5;
-      const close = blinkElapsed <= half
-        ? smoothStep(clamp(blinkElapsed / half, 0, 1))
-        : 1 - smoothStep(clamp((blinkElapsed - half) / half, 0, 1));
-      eyeOpen = (eyeOpen ?? 1) * (1 - close);
-    }
-    if (eyeOpen != null) {
-      this.setNaturalIdleParameter(layer, 'ParamEyeLOpen', eyeOpen);
-      this.setNaturalIdleParameter(layer, 'ParamEyeROpen', eyeOpen);
-    }
-  }
-
-  setNaturalIdleParameter(layer, id, value) {
-    const core = this.model?.internalModel?.coreModel;
-    if (!core || !id || !Number.isFinite(value)) return;
-    let index = -1;
-    try { index = core.getParameterIndex?.(id); } catch (_) {}
-    if (!Number.isInteger(index) || index < 0) return;
-    let min = -Infinity;
-    let max = Infinity;
-    try { min = Number(core.getParameterMinimumValue?.(index)); } catch (_) {}
-    try { max = Number(core.getParameterMaximumValue?.(index)); } catch (_) {}
-    const next = Number.isFinite(min) && Number.isFinite(max) ? clamp(value, min, max) : value;
-    layer.set(id, next);
   }
 
   cacheMosaicDrawables() {
@@ -2353,15 +2351,15 @@ class NovelModelLive2D {
       || [];
     this.mosaicDrawables = Array.from(ids)
       .map((id, index) => ({ id: String(id), index }))
-      .map((item) => ({ ...item, material: mosaicDrawableMaterial(item.id) }))
-      .filter((item) => item.material)
+      .filter((item) => item.id.startsWith('Mosaic_') || item.id.startsWith('MosaicInsted_'))
       .map((item) => ({
         ...item,
+        material: item.id.startsWith('MosaicInsted_') ? 'inverted' : 'mosaic',
       }));
     const mosaicCount = this.mosaicDrawables.filter((item) => item.material === 'mosaic').length;
     const invertedCount = this.mosaicDrawables.filter((item) => item.material === 'inverted').length;
     this.mosaicStatus = this.mosaicDrawables.length
-      ? `${mosaicCount} mosaic / ${invertedCount} inverted masks`
+      ? `${mosaicCount} Mosaic_ / ${invertedCount} MosaicInsted_ masks`
       : 'no mosaic drawables';
   }
 
@@ -2384,15 +2382,6 @@ class NovelModelLive2D {
     }
   }
 
-  refreshMosaicSourceCanvas() {
-    if (!this.app?.renderer || !this.app?.stage || !this.model) return;
-    this.suppressMosaicDrawables();
-    try {
-      this.app.renderer.render(this.app.stage);
-    } catch (_) {}
-    this.suppressMosaicDrawables();
-  }
-
   renderMosaicOverlay() {
     const canvas = el.mosaicLayer;
     if (!canvas) return;
@@ -2409,7 +2398,6 @@ class NovelModelLive2D {
 
     const source = el.live2dCanvas;
     if (!source?.width || !source?.height) return;
-    this.refreshMosaicSourceCanvas();
     const block = Math.max(2, Math.floor(Math.min(canvas.width / MOSAIC_PIXEL_DIV_X, canvas.height / MOSAIC_PIXEL_DIV_Y)));
     let drew = false;
     for (const drawable of drawables) {
@@ -3071,7 +3059,19 @@ class MessageCommand extends NovelCommandBase {
     const voiceCue = context.models.sound.consumeMessageVoice(command.voice || args.string(4));
     context.models.live2d.stopLipSync();
     context.models.message.show(speaker, text, voiceCue);
-    if (!context.replaying && voiceCue) context.models.sound.play(voiceCue, 'voice', 'voice', { volume: 1 });
+    
+    if (window._liveChannels) delete window._liveChannels['voice'];
+
+    if (!context.replaying && voiceCue) {
+      const voiceFactor = window.app?.config?.voiceVolume ?? 1.0;
+      context.models.sound.play(voiceCue, 'voice', 'voice', { volume: voiceFactor });
+      window._liveChannels = window._liveChannels || {};
+      window._liveChannels['voice'] = {
+        type: 'voice',
+        origVolume: 1.0, 
+        soundModel: context.models.sound
+      };
+    }
     return { pauseOnText: true };
   }
 }
@@ -3082,8 +3082,20 @@ class L2DMessageCommand extends NovelCommandBase {
     const text = command.message || args.string(2);
     const voiceCue = context.models.sound.consumeMessageVoice(command.voice || args.string(4));
     context.models.message.show(speaker, text, voiceCue);
+    
+    if (window._liveChannels) delete window._liveChannels['voice'];
+
     if (voiceCue) {
-      if (!context.replaying) context.models.sound.play(voiceCue, 'voice', 'voice', { volume: 1 });
+      if (!context.replaying) {
+        const voiceFactor = window.app?.config?.voiceVolume ?? 1.0;
+        context.models.sound.play(voiceCue, 'voice', 'voice', { volume: voiceFactor });
+        window._liveChannels = window._liveChannels || {};
+        window._liveChannels['voice'] = {
+          type: 'voice',
+          origVolume: 1.0, 
+          soundModel: context.models.sound
+        };
+      }
       context.models.live2d.playLipSync(voiceCue, context.models.live2d.lipSyncModeMulti);
     } else {
       context.models.live2d.stopLipSync();
@@ -3373,13 +3385,43 @@ class BgmPlayCommand extends NovelCommandBase {
     if (context.replaying && !endActionOn) return;
     if (!cue) {
       context.models.sound.fadeChannel('bgm', tag, 0, 0);
+      if (window._liveChannels) delete window._liveChannels[tag];
       return;
     }
+    if (window._liveChannels && window._liveChannels[tag] && window._liveChannels[tag].currentCue === cue) {
+      window._liveChannels[tag].origVolume = volume;
+      const bgmFactor = window.app?.config?.bgmVolume ?? 1.0;
+      const targetVolume = volume * bgmFactor;
+      
+      try {
+        const soundModel = context.models.sound;
+        if (typeof soundModel.fadeChannel === 'function') {
+          soundModel.fadeChannel('bgm', tag, targetVolume, 0);
+        } else if (typeof soundModel.fade === 'function') {
+          soundModel.fade(tag, targetVolume, 0);
+        }
+        
+        const ch = soundModel.channels?.[tag] || soundModel[tag];
+        if (ch) ch.volume = targetVolume;
+      } catch(e) {
+      }
+      
+      return;
+    }
+    const bgmFactor = window.app?.config?.bgmVolume ?? 1.0;
+    const finalVolume = volume * bgmFactor;
     context.models.sound.play(cue, 'bgm', tag, {
-      volume,
+      volume: finalVolume,
       fadeInSeconds,
       loop: true,
     });
+    window._liveChannels = window._liveChannels || {};
+    window._liveChannels[tag] = {
+      type: 'bgm',
+      currentCue: cue,       
+      origVolume: volume,
+      soundModel: context.models.sound 
+    };
   }
 }
 
@@ -3395,9 +3437,41 @@ class AsyncBgmPlayCommand extends NovelCommandAsyncBase {
       if (context.replaying && !endActionOn) return;
       if (!cue) {
         context.models.sound.fadeChannel('bgm', tag, 0, 0);
+        if (window._liveChannels) delete window._liveChannels[tag];
         return;
       }
-      context.models.sound.play(cue, 'bgm', tag, { volume, fadeInSeconds, loop: true });
+      if (window._liveChannels && window._liveChannels[tag] && window._liveChannels[tag].currentCue === cue) {
+        window._liveChannels[tag].origVolume = volume;
+        const bgmFactor = window.app?.config?.bgmVolume ?? 1.0;
+        const targetVolume = volume * bgmFactor;
+        
+        try {
+          const soundModel = context.models.sound;
+          if (typeof soundModel.fadeChannel === 'function') {
+            soundModel.fadeChannel('bgm', tag, targetVolume, 0);
+          } else if (typeof soundModel.fade === 'function') {
+            soundModel.fade(tag, targetVolume, 0);
+          }
+          const ch = soundModel.channels?.[tag] || soundModel[tag];
+          if (ch) ch.volume = targetVolume;
+        } catch(e) {
+        }
+        return;
+      }
+      const bgmFactor = window.app?.config?.bgmVolume ?? 1.0;
+      const finalVolume = volume * bgmFactor;
+      context.models.sound.play(cue, 'bgm', tag, { 
+        volume: finalVolume, 
+        fadeInSeconds, 
+        loop: true 
+      });
+      window._liveChannels = window._liveChannels || {};
+      window._liveChannels[tag] = {
+        type: 'bgm',
+        currentCue: cue,
+        origVolume: volume,
+        soundModel: context.models.sound
+      };
     });
   }
 }
@@ -3414,9 +3488,37 @@ class BgmPlayWorkunitCommand extends NovelCommandBase {
     if (context.replaying && !endActionOn) return;
     if (!workunit || !acbFile || !cue) {
       context.models.sound.fadeChannel('bgm', tag, 0, 0);
+      if (window._liveChannels) delete window._liveChannels[tag];
       return;
     }
-    context.models.sound.play(cue, 'bgm', tag, { volume, fadeInSeconds, loop: true });
+    if (window._liveChannels && window._liveChannels[tag] && window._liveChannels[tag].currentCue === cue) {
+      window._liveChannels[tag].origVolume = volume;
+      const bgmFactor = window.app?.config?.bgmVolume ?? 1.0;
+      const targetVolume = volume * bgmFactor;
+      
+      try {
+        const soundModel = context.models.sound;
+        if (typeof soundModel.fadeChannel === 'function') {
+          soundModel.fadeChannel('bgm', tag, targetVolume, 0);
+        } else if (typeof soundModel.fade === 'function') {
+          soundModel.fade(tag, targetVolume, 0);
+        }
+        const ch = soundModel.channels?.[tag] || soundModel[tag];
+        if (ch) ch.volume = targetVolume;
+      } catch(e) {
+      }
+      return;
+    }
+    const bgmFactor = window.app?.config?.bgmVolume ?? 1.0;
+    const finalVolume = volume * bgmFactor;
+    context.models.sound.play(cue, 'bgm', tag, { volume: finalVolume, fadeInSeconds, loop: true });
+    window._liveChannels = window._liveChannels || {};
+    window._liveChannels[tag] = {
+      type: 'bgm',
+      currentCue: cue,
+      origVolume: volume,
+      soundModel: context.models.sound
+    };
   }
 }
 
@@ -3430,13 +3532,42 @@ class AsyncBgmPlayWorkunitCommand extends NovelCommandAsyncBase {
     const volume = args.float(6, 1);
     const endActionOn = args.on(7, true);
     const options = this.asyncOptions(args, 8, 9);
+    
     return this.runAsync(context, command, options, async () => {
       if (context.replaying && !endActionOn) return;
       if (!workunit || !acbFile || !cue) {
         context.models.sound.fadeChannel('bgm', tag, 0, 0);
+        if (window._liveChannels) delete window._liveChannels[tag];
         return;
       }
-      context.models.sound.play(cue, 'bgm', tag, { volume, fadeInSeconds, loop: true });
+      if (window._liveChannels && window._liveChannels[tag] && window._liveChannels[tag].currentCue === cue) {
+        window._liveChannels[tag].origVolume = volume;
+        const bgmFactor = window.app?.config?.bgmVolume ?? 1.0;
+        const targetVolume = volume * bgmFactor;
+        
+        try {
+          const soundModel = context.models.sound;
+          if (typeof soundModel.fadeChannel === 'function') {
+            soundModel.fadeChannel('bgm', tag, targetVolume, 0);
+          } else if (typeof soundModel.fade === 'function') {
+            soundModel.fade(tag, targetVolume, 0);
+          }
+          const ch = soundModel.channels?.[tag] || soundModel[tag];
+          if (ch) ch.volume = targetVolume;
+        } catch(e) {
+        }
+        return;
+      }
+      const bgmFactor = window.app?.config?.bgmVolume ?? 1.0;
+      const finalVolume = volume * bgmFactor;
+      context.models.sound.play(cue, 'bgm', tag, { volume: finalVolume, fadeInSeconds, loop: true });
+      window._liveChannels = window._liveChannels || {};
+      window._liveChannels[tag] = {
+        type: 'bgm',
+        currentCue: cue,
+        origVolume: volume,
+        soundModel: context.models.sound
+      };
     });
   }
 }
@@ -3490,11 +3621,37 @@ class BgvPlayCommand extends NovelCommandBase {
     const cue = args.string(2, command.cue || '');
     const volume = args.float(3, 0);
     const highlight = args.on(4, false);
+    if (window._liveChannels && window._liveChannels[tag] && window._liveChannels[tag].currentCue === cue) {
+      window._liveChannels[tag].origVolume = volume;
+      const bgmFactor = window.app?.config?.bgmVolume ?? 1.0;
+      const targetVolume = volume * bgmFactor; 
+      try {
+        const soundModel = context.models.sound;
+        if (typeof soundModel.fadeChannel === 'function') {
+          soundModel.fadeChannel('bgv', tag, targetVolume, 0);
+        }
+        const ch = soundModel.channels?.[tag] || soundModel[tag];
+        if (ch) ch.volume = targetVolume;
+      } catch(e) {}
+      return;
+    }
+    const bgmFactor = window.app?.config?.bgmVolume ?? 1.0;
+    const baseVolume = highlight ? 0 : volume;
+    const finalVolume = baseVolume * bgmFactor;
     context.models.sound.play(cue, 'bgv', tag, {
-      volume: highlight ? 0 : volume,
+      volume: finalVolume,
       loop: false,
     });
-    if (highlight) context.models.sound.fadeChannel('bgv', tag, volume, 0);
+    if (highlight) {
+      context.models.sound.fadeChannel('bgv', tag, volume * bgmFactor, 0);
+    }
+    window._liveChannels = window._liveChannels || {};
+    window._liveChannels[tag] = {
+      type: 'bgm', 
+      currentCue: cue,
+      origVolume: volume,
+      soundModel: context.models.sound
+    };
   }
 }
 
@@ -3517,7 +3674,32 @@ class SePlayCommand extends NovelCommandBase {
     const fadeInSeconds = args.float(3, .75);
     const volume = args.float(4, 1);
     if (context.replaying) return;
-    context.models.sound.play(cue, 'se', tag, { volume, fadeInSeconds });
+
+    if (window._liveChannels && window._liveChannels[tag] && window._liveChannels[tag].currentCue === cue) {
+      window._liveChannels[tag].origVolume = volume;
+      const seFactor = window.app?.config?.seVolume ?? 1.0;
+      const targetVolume = volume * seFactor;
+      try {
+        const soundModel = context.models.sound;
+        if (typeof soundModel.fadeChannel === 'function') {
+          soundModel.fadeChannel('se', tag, targetVolume, 0);
+        } else if (typeof soundModel.fade === 'function') {
+          soundModel.fade(tag, targetVolume, 0);
+        }
+        const ch = soundModel.channels?.[tag] || soundModel[tag];
+        if (ch) ch.volume = targetVolume;
+      } catch(e) {}
+      return;
+    }
+    const seFactor = window.app?.config?.seVolume ?? 1.0;
+    context.models.sound.play(cue, 'se', tag, { volume: volume * seFactor, fadeInSeconds });
+    window._liveChannels = window._liveChannels || {};
+    window._liveChannels[tag] = {
+      type: 'se',
+      currentCue: cue,
+      origVolume: volume,
+      soundModel: context.models.sound
+    };
   }
 }
 
@@ -3530,7 +3712,34 @@ class AsyncSePlayCommand extends NovelCommandAsyncBase {
     const options = this.asyncOptions(args, 5, 6);
     return this.runAsync(context, command, options, async () => {
       if (context.replaying) return;
-      context.models.sound.play(cue, 'se', tag, { volume, fadeInSeconds });
+
+      if (window._liveChannels && window._liveChannels[tag] && window._liveChannels[tag].currentCue === cue) {
+        window._liveChannels[tag].origVolume = volume;
+        const seFactor = window.app?.config?.seVolume ?? 1.0;
+        const targetVolume = volume * seFactor;
+        try {
+          const soundModel = context.models.sound;
+          if (typeof soundModel.fadeChannel === 'function') {
+            soundModel.fadeChannel('se', tag, targetVolume, 0);
+          } else if (typeof soundModel.fade === 'function') {
+            soundModel.fade(tag, targetVolume, 0);
+          }
+          const ch = soundModel.channels?.[tag] || soundModel[tag];
+          if (ch) ch.volume = targetVolume;
+        } catch(e) {}
+        return;
+      }
+
+      const seFactor = window.app?.config?.seVolume ?? 1.0;
+      context.models.sound.play(cue, 'se', tag, { volume: volume * seFactor, fadeInSeconds });
+
+      window._liveChannels = window._liveChannels || {};
+      window._liveChannels[tag] = {
+        type: 'se',
+        currentCue: cue,
+        origVolume: volume,
+        soundModel: context.models.sound
+      };
     });
   }
 }
@@ -4204,7 +4413,34 @@ class SePlayIngameCommand extends NovelCommandBase {
     const fadeInSeconds = args.float(4, .75);
     const volume = args.float(5, 1);
     if (context.replaying) return;
-    context.models.sound.play(cue, 'se', tag, { volume, fadeInSeconds });
+
+    if (window._liveChannels && window._liveChannels[tag] && window._liveChannels[tag].currentCue === cue) {
+      window._liveChannels[tag].origVolume = volume;
+      const seFactor = window.app?.config?.seVolume ?? 1.0;
+      const targetVolume = volume * seFactor;
+      try {
+        const soundModel = context.models.sound;
+        if (typeof soundModel.fadeChannel === 'function') {
+          soundModel.fadeChannel('se', tag, targetVolume, 0);
+        } else if (typeof soundModel.fade === 'function') {
+          soundModel.fade(tag, targetVolume, 0);
+        }
+        const ch = soundModel.channels?.[tag] || soundModel[tag];
+        if (ch) ch.volume = targetVolume;
+      } catch(e) {}
+      return;
+    }
+
+    const seFactor = window.app?.config?.seVolume ?? 1.0;
+    context.models.sound.play(cue, 'se', tag, { volume: volume * seFactor, fadeInSeconds });
+
+    window._liveChannels = window._liveChannels || {};
+    window._liveChannels[tag] = {
+      type: 'se',
+      currentCue: cue,
+      origVolume: volume,
+      soundModel: context.models.sound
+    };
   }
 }
 
@@ -4217,7 +4453,34 @@ class AsyncSePlayIngameCommand extends NovelCommandAsyncBase {
     const options = this.asyncOptions(args, 6, 7, 1, 0);
     return this.runAsync(context, command, options, async () => {
       if (context.replaying) return;
-      context.models.sound.play(cue, 'se', tag, { volume, fadeInSeconds });
+
+      if (window._liveChannels && window._liveChannels[tag] && window._liveChannels[tag].currentCue === cue) {
+        window._liveChannels[tag].origVolume = volume;
+        const seFactor = window.app?.config?.seVolume ?? 1.0;
+        const targetVolume = volume * seFactor;
+        try {
+          const soundModel = context.models.sound;
+          if (typeof soundModel.fadeChannel === 'function') {
+            soundModel.fadeChannel('se', tag, targetVolume, 0);
+          } else if (typeof soundModel.fade === 'function') {
+            soundModel.fade(tag, targetVolume, 0);
+          }
+          const ch = soundModel.channels?.[tag] || soundModel[tag];
+          if (ch) ch.volume = targetVolume;
+        } catch(e) {}
+        return;
+      }
+
+      const seFactor = window.app?.config?.seVolume ?? 1.0;
+      context.models.sound.play(cue, 'se', tag, { volume: volume * seFactor, fadeInSeconds });
+
+      window._liveChannels = window._liveChannels || {};
+      window._liveChannels[tag] = {
+        type: 'se',
+        currentCue: cue,
+        origVolume: volume,
+        soundModel: context.models.sound
+      };
     });
   }
 }
@@ -4889,7 +5152,6 @@ function pixelateCanvasMesh(source, target, scratch, mesh, blockSize) {
   scratchCtx.imageSmoothingEnabled = true;
   scratchCtx.clearRect(0, 0, smallWidth, smallHeight);
   scratchCtx.drawImage(source, x, y, width, height, 0, 0, smallWidth, smallHeight);
-  neutralizeMosaicScratch(scratchCtx, smallWidth, smallHeight);
 
   targetCtx.save();
   buildMeshClipPath(targetCtx, mesh.points, mesh.indices);
@@ -4898,22 +5160,6 @@ function pixelateCanvasMesh(source, target, scratch, mesh, blockSize) {
   targetCtx.drawImage(scratch, 0, 0, smallWidth, smallHeight, x, y, width, height);
   targetCtx.imageSmoothingEnabled = true;
   targetCtx.restore();
-}
-
-function neutralizeMosaicScratch(ctx, width, height) {
-  try {
-    const image = ctx.getImageData(0, 0, width, height);
-    const data = image.data;
-    const saturation = 0.12;
-    for (let i = 0; i < data.length; i += 4) {
-      if (data[i + 3] === 0) continue;
-      const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-      data[i] = gray + (data[i] - gray) * saturation;
-      data[i + 1] = gray + (data[i + 1] - gray) * saturation;
-      data[i + 2] = gray + (data[i + 2] - gray) * saturation;
-    }
-    ctx.putImageData(image, 0, 0);
-  } catch (_) {}
 }
 
 function buildMeshClipPath(ctx, points, indices) {
@@ -5041,21 +5287,14 @@ function normalizeMosaicMode(value) {
   const mode = normalizeKey(value || 'original');
   if (mode === 'off' || mode === 'none') return 'off';
   if (mode === 'mosaic' || mode === 'normal') return 'mosaic';
-  if (mode === 'inverted' || mode === 'mosaicinvert' || mode === 'mosaicinsted' || mode === 'mosaicinstead') return 'inverted';
+  if (mode === 'inverted' || mode === 'mosaicinsted' || mode === 'mosaicinstead') return 'inverted';
   return 'original';
-}
-
-function mosaicDrawableMaterial(id) {
-  const key = normalizeKey(id);
-  if (!key.includes('mosaic') && !key.includes('mozaic')) return '';
-  if (key.includes('invert') || key.includes('insted') || key.includes('instead')) return 'inverted';
-  return 'mosaic';
 }
 
 function mosaicModeLabel(value) {
   const mode = normalizeMosaicMode(value);
   if (mode === 'mosaic') return 'Mosaic_';
-  if (mode === 'inverted') return 'MosaicInvert_';
+  if (mode === 'inverted') return 'MosaicInsted_';
   if (mode === 'off') return 'off';
   return 'Original';
 }
@@ -5101,3 +5340,143 @@ function smoothStep(t) {
   const x = clamp(t, 0, 1);
   return x * x * (3 - 2 * x);
 }
+
+
+function initVolumeSliderControl() {
+  window.app = window.app || {};
+  window.app.config = window.app.config || {};
+  const bgmSlider = document.getElementById('vol-bgm');
+  const seSlider = document.getElementById('vol-se');
+  const voiceSlider = document.getElementById('vol-voice');
+  if (!bgmSlider && !seSlider && !voiceSlider) {
+    return false; 
+  }
+  window.app.config.bgmVolume = bgmSlider ? parseFloat(bgmSlider.value) : 1.0;
+  window.app.config.seVolume = seSlider ? parseFloat(seSlider.value) : 1.0;
+  window.app.config.voiceVolume = voiceSlider ? parseFloat(voiceSlider.value) : 1.0;
+  if (bgmSlider) document.getElementById('vol-bgm-txt').innerText = Math.round(bgmSlider.value * 100) + '%';
+  if (seSlider) document.getElementById('vol-se-txt').innerText = Math.round(seSlider.value * 100) + '%';
+  if (voiceSlider) document.getElementById('vol-voice-txt').innerText = Math.round(voiceSlider.value * 100) + '%';
+  function applyLiveVolume(type, currentFactor) {    
+    if (!window._liveChannels) return;
+
+    Object.keys(window._liveChannels).forEach(tag => {
+      const channelInfo = window._liveChannels[tag];
+      
+      if (channelInfo && channelInfo.type === type) {
+        const soundModel = channelInfo.soundModel;
+
+        if (type === 'voice' && channelInfo.createdAt && channelInfo.durationMs) {
+          const elapsed = Date.now() - channelInfo.createdAt;
+          if (elapsed >= channelInfo.durationMs) {
+            delete window._liveChannels[tag];
+            return;
+          }
+        }
+
+        const targetVolume = channelInfo.origVolume * currentFactor; 
+
+        try {
+          if (type === 'se') {
+            if (typeof soundModel.fadeChannel === 'function') {
+              soundModel.fadeChannel('se', tag, targetVolume, 0);
+              soundModel.fadeChannel('effect', tag, targetVolume, 0);
+              soundModel.fadeChannel('sound', tag, targetVolume, 0);
+            }
+            if (typeof soundModel.setChannelVolume === 'function') {
+              soundModel.setChannelVolume('se', targetVolume);
+              soundModel.setChannelVolume('effect', targetVolume);
+              soundModel.setChannelVolume('sound', targetVolume);
+            }
+          }
+          if (typeof soundModel.fadeChannel === 'function') {
+            soundModel.fadeChannel(type, tag, targetVolume, 0);
+          } else if (typeof soundModel.fade === 'function') {
+            soundModel.fade(tag, targetVolume, 0);
+          }
+
+          if (typeof soundModel.setVolume === 'function') {
+            soundModel.setVolume(tag, targetVolume);
+          }
+          if (typeof soundModel.setChannelVolume === 'function') {
+            soundModel.setChannelVolume(tag, targetVolume);
+            soundModel.setChannelVolume(type, targetVolume);
+          }
+
+          const ch = soundModel.channels?.[tag] || soundModel.channels?.[type] || soundModel.channels?.['effect'] || soundModel.channels?.['sound'] || soundModel[tag] || soundModel[type];
+          if (ch && typeof ch === 'object') {
+            if (typeof ch.volume === 'function') {
+              ch.volume(targetVolume); 
+            }
+            
+            if (ch.tween && typeof ch.tween.stop === 'function') {
+              ch.volume = targetVolume; 
+            }
+          }
+
+        } catch (e) {
+          console.error(`出现异常:`, e);
+        }
+      }
+    });
+  }
+  if (bgmSlider && !bgmSlider._hasInit) {
+    bgmSlider._hasInit = true;
+    bgmSlider.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      window.app.config.bgmVolume = val;
+      document.getElementById('vol-bgm-txt').innerText = Math.round(val * 100) + '%';
+      applyLiveVolume('bgm', val);
+    });
+  }
+  if (seSlider && !seSlider._hasInit) {
+    seSlider._hasInit = true;
+    seSlider.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      window.app.config.seVolume = val;
+      document.getElementById('vol-se-txt').innerText = Math.round(val * 100) + '%';
+      
+      applyLiveVolume('se', val);
+    });
+  }
+  if (voiceSlider && !voiceSlider._hasInit) {
+    voiceSlider._hasInit = true;
+    voiceSlider.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      window.app.config.voiceVolume = val;
+      document.getElementById('vol-voice-txt').innerText = Math.round(val * 100) + '%';
+      
+      applyLiveVolume('voice', val);
+    });
+  }
+
+  return true;
+}
+
+
+initVolumeSliderControl();
+const volInitTimer = setInterval(() => {
+  if (initVolumeSliderControl()) clearInterval(volInitTimer);
+}, 500);
+
+document.addEventListener('DOMContentLoaded', () => {
+  const inspectPane = document.getElementById('inspectPane');
+  const toggleBtn = document.getElementById('toggleInspectBtn');
+  
+  if (inspectPane && toggleBtn) {
+    toggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation(); 
+      inspectPane.classList.toggle('collapsed');
+      if (inspectPane.classList.contains('collapsed')) {
+        toggleBtn.innerText = '◀'; 
+      } else {
+        toggleBtn.innerText = '▶'; 
+      }
+      const fitBtn = document.getElementById('fitBtn');
+      if (fitBtn) {
+        fitBtn.click(); 
+      }
+      window.dispatchEvent(new Event('resize'));
+    });
+  }
+});
