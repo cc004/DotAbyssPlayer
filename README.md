@@ -26,6 +26,22 @@ This folder intentionally does not include:
 
 ## Quick start
 
+For the full Android DMM R18 workflow, run the one-shot script:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_full_r18.ps1
+```
+
+It creates `.venv`, installs pinned Python dependencies, builds `DotAbyssClient`, downloads the full bundle set, extracts all r18 novel stories, extracts shared assets, converts audio to OGG, and verifies Live2D motion files.
+
+For a lightweight connectivity test without downloading bundle payloads:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_full_r18.ps1 -DryRun
+```
+
+Manual steps are still available.
+
 1. Download the remote catalog and bundle set:
 
 ```powershell
@@ -35,19 +51,10 @@ dotnet run --project src/DotAbyssClient -- download --profile android-dmm-r18 -o
 2. Extract story bundles into the player data folder:
 
 ```powershell
-python tools/adv_extract.py --scan-all --bundle-root workspace/bundles/android-dmm-r18 --output src/AdvPlayer/data_r18_all
+.\.venv\Scripts\python.exe tools/adv_extract.py --scan-all --bundle-root workspace/bundles/android-dmm-r18 --output src/AdvPlayer/data_r18_all
 ```
 
-3. Extract shared character, background, and SE assets:
-
-```powershell
-python tools/extract_charastand_assets.py --story-root src/AdvPlayer/data_r18_all/stories
-python tools/extract_bg_assets.py --story-root src/AdvPlayer/data_r18_all/stories
-python tools/extract_global_se_assets.py --story-root src/AdvPlayer/data_r18_all/stories
-python tools/convert_wav_audio_to_ogg.py
-```
-
-4. Start the player:
+3. Start the player:
 
 ```powershell
 python scripts/serve_advplayer.py
@@ -55,9 +62,9 @@ python scripts/serve_advplayer.py
 
 Then open `http://127.0.0.1:8777/`.
 
-## One-shot workflow
+## Legacy Workflow
 
-For the common Android DMM R18 flow, use:
+The older helper remains available, but the full deployment path above is preferred:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_r18_workflow.ps1

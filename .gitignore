@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 *.pyo
+.venv/
 
 src/DotAbyssClient/bin/
 src/DotAbyssClient/obj/

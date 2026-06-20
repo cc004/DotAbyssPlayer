@@ -197,6 +197,25 @@ def safe_name(value: str, fallback: str = "asset") -> str:
     return value or fallback
 
 
+def unity_object_name(data, fallback: str = "asset") -> str:
+    for attr in ("name", "m_Name"):
+        value = getattr(data, attr, None)
+        if value:
+            return str(value)
+    return fallback
+
+
+def unity_text_asset_script(data):
+    for attr in ("script", "m_Script"):
+        if hasattr(data, attr):
+            return getattr(data, attr)
+    return b""
+
+
+def unwrap_offset_ptr(value):
+    return getattr(value, "data", value)
+
+
 def write_json(path: Path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -229,7 +248,7 @@ def csv_rows(text: str):
 
 
 def normalize_command(row):
-    cmd = row[0].strip()
+    cmd = row[0].lstrip("\ufeff").strip()
     if cmd.startswith(":"):
         return ":label"
     return cmd.lower()
@@ -430,7 +449,7 @@ def unity_transform_paths(env) -> dict[int, str]:
     for obj in env.objects:
         if obj.type.name == "GameObject":
             data = obj.read()
-            game_names[obj.path_id] = str(data.name)
+            game_names[obj.path_id] = unity_object_name(data, f"GameObject_{obj.path_id}")
             for component in getattr(data, "m_Components", []) or []:
                 reader = pptr_reader(component)
                 if reader is not None and reader.type.name == "Transform":
@@ -553,7 +572,7 @@ def motion3_from_animation_clip(clip, bundle: str, parameter_hashes: dict[int, s
 
     bindings = getattr(binding_constant, "genericBindings", []) or []
     keys: dict[str, list[dict]] = {}
-    clip_data = getattr(getattr(clip, "m_MuscleClip", None), "m_Clip", None)
+    clip_data = unwrap_offset_ptr(getattr(getattr(clip, "m_MuscleClip", None), "m_Clip", None))
     streamed = getattr(clip_data, "m_StreamedClip", None)
     streamed_count = int(getattr(streamed, "curveCount", 0) or 0)
 
@@ -1170,10 +1189,10 @@ def extract_story(
                 if typ not in ("TextAsset", "Texture2D", "AnimationClip", "MonoBehaviour"):
                     continue
                 data = obj.read()
-                name = getattr(data, "name", "") or f"{typ}_{obj.path_id}"
+                name = unity_object_name(data, f"{typ}_{obj.path_id}")
 
                 if typ == "TextAsset":
-                    text = decode_text_asset(data.script)
+                    text = decode_text_asset(unity_text_asset_script(data))
                     out_name = unique_name(safe_name(name), text_names, ".txt")
                     rel = Path("textassets") / out_name
                     (story_out / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -1456,6 +1475,9 @@ def main():
     if args.scan_all:
         roots.extend(discover_story_roots(Path(args.scan_root) if args.scan_root else bundle_root, args.limit, args.story_prefix))
     if not roots:
+        if args.scan_all:
+            scan_root = Path(args.scan_root) if args.scan_root else bundle_root
+            parser.error(f"--scan-all found no story roots under {scan_root}")
         parser.error("provide --target or --scan-all")
 
     story_ids = make_unique_story_ids(roots)

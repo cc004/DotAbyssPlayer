@@ -8,6 +8,18 @@ This repo uses a simple relative directory layout:
 
 ## 1. Download maintenance, catalog, and bundles
 
+The preferred full workflow is:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_full_r18.ps1
+```
+
+For a network/catalog-only smoke test:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_full_r18.ps1 -DryRun
+```
+
 `src/DotAbyssClient` is the entry point for the network side of the workflow.
 
 Example:
@@ -84,7 +96,15 @@ Serve `src/AdvPlayer` with any static server. The bundled helper uses Python:
 python scripts/serve_advplayer.py
 ```
 
-## 5. Common directories intentionally excluded from git
+## 5. Verify extracted data
+
+The full workflow runs this automatically after extraction:
+
+```powershell
+.\.venv\Scripts\python.exe tools/verify_advplayer_data.py --data-root src/AdvPlayer/data_r18_all
+```
+
+## 6. Common directories intentionally excluded from git
 
 - `workspace/`
 - `src/AdvPlayer/data/`
